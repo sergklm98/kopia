@@ -75,7 +75,8 @@ type commandServerStart struct {
 
 	logServerRequests bool
 
-	disableCSRFTokenChecks bool // disable CSRF token checks - used for development/debugging only
+	disableCSRFTokenChecks  bool // disable CSRF token checks - used for development/debugging only
+	useRepositoryUsersForUI bool // use repository users for web UI authentication instead of single user
 
 	sf  serverFlags
 	svc advancedAppServices
@@ -123,6 +124,7 @@ func (c *commandServerStart) setup(svc advancedAppServices, parent commandParent
 
 	cmd.Flag("log-server-requests", "Log server requests").Hidden().BoolVar(&c.logServerRequests)
 	cmd.Flag("disable-csrf-token-checks", "Disable CSRF token").Hidden().BoolVar(&c.disableCSRFTokenChecks)
+	cmd.Flag("use-repo-auth", "Use repository users for web UI authentication instead of single user").BoolVar(&c.useRepositoryUsersForUI)
 
 	cmd.Flag("shutdown-grace-period", "Grace period for shutting down the server").Default("5s").DurationVar(&c.shutdownGracePeriod)
 
@@ -163,9 +165,10 @@ func (c *commandServerStart) serverStartOptions(ctx context.Context) (*server.Op
 		UITitlePrefix:        c.uiTitlePrefix,
 		PersistentLogs:       c.persistentLogs,
 
-		DebugScheduler:         c.debugScheduler,
-		MinMaintenanceInterval: c.minMaintenanceInterval,
-		DisableCSRFTokenChecks: c.disableCSRFTokenChecks,
+		DebugScheduler:          c.debugScheduler,
+		MinMaintenanceInterval:  c.minMaintenanceInterval,
+		DisableCSRFTokenChecks:  c.disableCSRFTokenChecks,
+		UseRepositoryUsersForUI: c.useRepositoryUsersForUI,
 
 		EnableErrorNotifications: c.svc.enableErrorNotifications(),
 		NotifyTemplateOptions:    c.svc.notificationTemplateOptions(),

@@ -72,6 +72,34 @@ func requireUIUser(_ context.Context, rc requestContext) bool {
 	return user == rc.srv.getOptions().UIUser
 }
 
+// requireRepositoryUser allows any user that exists in the repository to access the web UI
+func requireRepositoryUser(ctx context.Context, rc requestContext) bool {
+	if rc.srv.getAuthenticator() == nil {
+		return true
+	}
+
+	user, password, _ := rc.req.BasicAuth()
+	if user == "" || password == "" {
+		return false
+	}
+
+	// Use the same authentication logic as API connections
+	// This checks against repository-stored users
+	authenticator := rc.srv.getAuthenticator()
+	if authenticator == nil {
+		return true
+	}
+
+	isValid := authenticator.IsValid(ctx, rc.rep, user, password)
+
+	// Log repository user authentication attempts (but not the result to avoid security issues)
+	if user != "" {
+		log(ctx).Debugf("Repository user authentication attempt: %s", user)
+	}
+
+	return isValid
+}
+
 func requireServerControlUser(_ context.Context, rc requestContext) bool {
 	if rc.srv.getAuthenticator() == nil {
 		return true
@@ -96,6 +124,7 @@ func handlerWillCheckAuthorization(_ context.Context, _ requestContext) bool {
 
 var (
 	_ isAuthorizedFunc = requireUIUser
+	_ isAuthorizedFunc = requireRepositoryUser
 	_ isAuthorizedFunc = anyAuthenticatedUser
 	_ isAuthorizedFunc = handlerWillCheckAuthorization
 )

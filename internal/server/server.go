@@ -215,7 +215,9 @@ func (s *Server) isAuthenticated(rc requestContext) bool {
 		}
 	}
 
-	if !authn.IsValid(rc.req.Context(), rc.rep, username, password) {
+	isValid := authn.IsValid(rc.req.Context(), rc.rep, username, password)
+
+	if !isValid {
 		rc.w.Header().Set("WWW-Authenticate", `Basic realm="Kopia"`)
 		http.Error(rc.w, "Access denied.\n", http.StatusUnauthorized)
 
@@ -300,6 +302,15 @@ func (s *Server) getOptions() *Options {
 	return &s.options
 }
 
+func (s *Server) getUIUserAuthorizationFunc() isAuthorizedFunc {
+	if s.options.UseRepositoryUsersForUI {
+		log(s.rootctx).Infof("Web UI authentication: using repository users")
+		return requireRepositoryUser
+	}
+	log(s.rootctx).Infof("Web UI authentication: using single user")
+	return requireUIUser
+}
+
 func (s *Server) taskManager() *uitask.Manager {
 	return s.taskmgr
 }
@@ -343,7 +354,7 @@ func (s *Server) handleServerControlAPIPossiblyNotConnected(f apiRequestFunc) ht
 }
 
 func (s *Server) handleUI(f apiRequestFunc) http.HandlerFunc {
-	return s.handleRequestPossiblyNotConnected(requireUIUser, csrfTokenRequired, func(ctx context.Context, rc requestContext) (any, *apiError) {
+	return s.handleRequestPossiblyNotConnected(s.getUIUserAuthorizationFunc(), csrfTokenRequired, func(ctx context.Context, rc requestContext) (any, *apiError) {
 		if rc.rep == nil {
 			return nil, requestError(serverapi.ErrorNotConnected, "not connected")
 		}
@@ -353,7 +364,7 @@ func (s *Server) handleUI(f apiRequestFunc) http.HandlerFunc {
 }
 
 func (s *Server) handleUIPossiblyNotConnected(f apiRequestFunc) http.HandlerFunc {
-	return s.handleRequestPossiblyNotConnected(requireUIUser, csrfTokenRequired, f)
+	return s.handleRequestPossiblyNotConnected(s.getUIUserAuthorizationFunc(), csrfTokenRequired, f)
 }
 
 func (s *Server) handleRequestPossiblyNotConnected(isAuthorized isAuthorizedFunc, checkCSRFToken csrfTokenOption, f apiRequestFunc) http.HandlerFunc {
@@ -810,7 +821,7 @@ func (s *Server) ServeStaticFiles(m *mux.Router, fs http.FileSystem) {
 		}
 
 		//nolint:contextcheck
-		if !requireUIUser(rc.req.Context(), rc) {
+		if !s.getUIUserAuthorizationFunc()(rc.req.Context(), rc) {
 			http.Error(w, `UI Access denied. See https://github.com/kopia/kopia/issues/880#issuecomment-798421751 for more information.`, http.StatusForbidden)
 			return
 		}
@@ -861,6 +872,7 @@ type Options struct {
 	MinMaintenanceInterval   time.Duration
 	EnableErrorNotifications bool
 	NotifyTemplateOptions    notifytemplate.Options
+	UseRepositoryUsersForUI  bool // use repository users for web UI authentication instead of single user
 }
 
 // InitRepositoryFunc is a function that attempts to connect to/open repository.
