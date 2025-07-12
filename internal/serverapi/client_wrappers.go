@@ -220,6 +220,19 @@ func GetObject(ctx context.Context, c *apiclient.KopiaAPIClient, objectID string
 	return b, nil
 }
 
+// ChangeUser invokes the 'change-user' API.
+func ChangeUser(ctx context.Context, c *apiclient.KopiaAPIClient, username, password string) error {
+	req := struct {
+		Username string `json:"username"`
+		Password string `json:"password"`
+	}{
+		Username: username,
+		Password: password,
+	}
+	//nolint:wrapcheck
+	return c.Post(ctx, "change-user", req, &Empty{})
+}
+
 func matchSourceParameters(match *snapshot.SourceInfo) string {
 	if match == nil {
 		return ""

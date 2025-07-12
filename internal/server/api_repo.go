@@ -54,6 +54,7 @@ func handleRepoStatus(_ context.Context, rc requestContext) (any, *apiError) {
 			Storage:                    dr.BlobReader().ConnectionInfo().Type,
 			ClientOptions:              dr.ClientOptions(),
 			SupportsContentCompression: dr.ContentReader().SupportsContentCompression(),
+			UseRepositoryAuth:          rc.srv.getOptions().UseRepositoryUsersForUI,
 		}, nil
 	}
 
@@ -63,8 +64,9 @@ func handleRepoStatus(_ context.Context, rc requestContext) (any, *apiError) {
 	}
 
 	result := &serverapi.StatusResponse{
-		Connected:     true,
-		ClientOptions: rc.rep.ClientOptions(),
+		Connected:         true,
+		ClientOptions:     rc.rep.ClientOptions(),
+		UseRepositoryAuth: rc.srv.getOptions().UseRepositoryUsersForUI,
 	}
 
 	if rr, ok := rc.rep.(remoteRepository); ok {

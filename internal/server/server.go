@@ -156,6 +156,7 @@ func (s *Server) SetupHTMLUIAPIHandlers(m *mux.Router) {
 	m.HandleFunc("/api/v1/mounts", s.handleUI(handleMountList)).Methods(http.MethodGet)
 
 	m.HandleFunc("/api/v1/current-user", s.handleUIPossiblyNotConnected(handleCurrentUser)).Methods(http.MethodGet)
+	m.HandleFunc("/api/v1/change-user", s.handleUI(handleChangeUser)).Methods(http.MethodPost)
 	m.HandleFunc("/api/v1/ui-preferences", s.handleUIPossiblyNotConnected(handleGetUIPreferences)).Methods(http.MethodGet)
 	m.HandleFunc("/api/v1/ui-preferences", s.handleUIPossiblyNotConnected(handleSetUIPreferences)).Methods(http.MethodPut)
 
@@ -199,7 +200,21 @@ func (s *Server) isAuthenticated(rc requestContext) bool {
 		return true
 	}
 
-	username, password, ok := rc.req.BasicAuth()
+	var username, password string
+	var ok bool
+
+	// When using repository auth, check for custom headers first
+	if s.options.UseRepositoryUsersForUI {
+		username = rc.req.Header.Get("X-Kopia-User")
+		password = rc.req.Header.Get("X-Kopia-Password")
+		ok = username != "" && password != ""
+	}
+
+	// Fall back to Basic Auth if custom headers not present or not using repo auth
+	if !ok {
+		username, password, ok = rc.req.BasicAuth()
+	}
+
 	if !ok {
 		rc.w.Header().Set("WWW-Authenticate", `Basic realm="Kopia"`)
 		http.Error(rc.w, "Missing credentials.\n", http.StatusUnauthorized)
@@ -304,10 +319,10 @@ func (s *Server) getOptions() *Options {
 
 func (s *Server) getUIUserAuthorizationFunc() isAuthorizedFunc {
 	if s.options.UseRepositoryUsersForUI {
-		log(s.rootctx).Infof("Web UI authentication: using repository users")
+		log(s.rootctx).Debugf("Web UI authentication: using repository users")
 		return requireRepositoryUser
 	}
-	log(s.rootctx).Infof("Web UI authentication: using single user")
+	log(s.rootctx).Debugf("Web UI authentication: using single user")
 	return requireUIUser
 }
 
@@ -1157,4 +1172,78 @@ func New(ctx context.Context, options *Options) (*Server, error) {
 	s.parallelSnapshotsChanged = sync.NewCond(&s.parallelSnapshotsMutex)
 
 	return s, nil
+}
+
+func handleChangeUser(ctx context.Context, rc requestContext) (any, *apiError) {
+	// Only allow change user when using repository authentication
+	if !rc.srv.getOptions().UseRepositoryUsersForUI {
+		return nil, requestError(serverapi.ErrorMalformedRequest, "change user is only available when using repository authentication (--use-repo-auth)")
+	}
+
+	// Parse the request body to get new credentials
+	var req struct {
+		Username string `json:"username"`
+		Password string `json:"password"`
+	}
+
+	if err := json.Unmarshal(rc.body, &req); err != nil {
+		return nil, requestError(serverapi.ErrorMalformedRequest, "invalid request body")
+	}
+
+	// Handle logout case (empty credentials)
+	if req.Username == "" && req.Password == "" {
+		// Clear existing auth cookies
+		http.SetCookie(rc.w, &http.Cookie{
+			Name:    kopiaAuthCookie,
+			Value:   "",
+			Expires: clock.Now().Add(-24 * time.Hour),
+			Path:    "/",
+			MaxAge:  -1,
+		})
+
+		log(ctx).Infof("user logged out from client %s", rc.req.RemoteAddr)
+		return &serverapi.Empty{}, nil
+	}
+
+	if req.Username == "" || req.Password == "" {
+		return nil, requestError(serverapi.ErrorMalformedRequest, "username and password are required")
+	}
+
+	// Validate the new credentials
+	authn := rc.srv.getAuthenticator()
+	if authn == nil {
+		return nil, internalServerError(errors.New("no authenticator available"))
+	}
+
+	if !authn.IsValid(ctx, rc.rep, req.Username, req.Password) {
+		return nil, requestError(serverapi.ErrorAccessDenied, "invalid credentials")
+	}
+
+	// Clear existing auth cookies
+	http.SetCookie(rc.w, &http.Cookie{
+		Name:    kopiaAuthCookie,
+		Value:   "",
+		Expires: clock.Now().Add(-24 * time.Hour),
+		Path:    "/",
+		MaxAge:  -1,
+	})
+
+	// Generate new auth cookie for the new user
+	now := clock.Now()
+	ac, err := rc.srv.generateShortTermAuthCookie(req.Username, now)
+	if err != nil {
+		log(ctx).Errorf("unable to generate short-term auth cookie: %v", err)
+		return nil, internalServerError(err)
+	}
+
+	http.SetCookie(rc.w, &http.Cookie{
+		Name:    kopiaAuthCookie,
+		Value:   ac,
+		Expires: now.Add(kopiaAuthCookieTTL),
+		Path:    "/",
+	})
+
+	log(ctx).Infof("user changed from client %s to user %s", rc.req.RemoteAddr, req.Username)
+
+	return &serverapi.Empty{}, nil
 }
