@@ -83,6 +83,15 @@ func requireRepositoryUser(ctx context.Context, rc requestContext) bool {
 		return false
 	}
 
+	// If repository is not connected, fall back to single user authentication
+	if rc.rep == nil {
+		// Fall back to single user authentication when repository is disconnected
+		if rc.srv.getOptions().UIUser == "" {
+			return false
+		}
+		return user == rc.srv.getOptions().UIUser
+	}
+
 	// Use the same authentication logic as API connections
 	// This checks against repository-stored users
 	authenticator := rc.srv.getAuthenticator()

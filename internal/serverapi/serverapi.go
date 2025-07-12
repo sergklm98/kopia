@@ -32,6 +32,7 @@ type StatusResponse struct {
 	Storage                    string         `json:"storage,omitempty"`
 	APIServerURL               string         `json:"apiServerURL,omitempty"`
 	SupportsContentCompression bool           `json:"supportsContentCompression"`
+	UseRepositoryAuth          bool           `json:"useRepositoryAuth"`
 
 	repo.ClientOptions
 

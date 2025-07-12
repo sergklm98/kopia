@@ -109,6 +109,12 @@ func RepoStatus(ctx context.Context, c *apiclient.KopiaAPIClient) (*StatusRespon
 	return resp, nil
 }
 
+// Logout invokes the 'logout' API.
+func Logout(ctx context.Context, c *apiclient.KopiaAPIClient) error {
+	//nolint:wrapcheck
+	return c.Post(ctx, "logout", &Empty{}, &Empty{})
+}
+
 // Status invokes the 'control/status' API.
 func Status(ctx context.Context, c *apiclient.KopiaAPIClient) (*StatusResponse, error) {
 	resp := &StatusResponse{}

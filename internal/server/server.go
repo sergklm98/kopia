@@ -139,7 +139,7 @@ func (s *Server) SetupHTMLUIAPIHandlers(m *mux.Router) {
 	m.HandleFunc("/api/v1/estimate", s.handleUI(handleEstimate)).Methods(http.MethodPost)
 	m.HandleFunc("/api/v1/paths/resolve", s.handleUI(handlePathResolve)).Methods(http.MethodPost)
 	m.HandleFunc("/api/v1/cli", s.handleUI(handleCLIInfo)).Methods(http.MethodGet)
-	m.HandleFunc("/api/v1/repo/status", s.handleUIPossiblyNotConnected(handleRepoStatus)).Methods(http.MethodGet)
+	m.HandleFunc("/api/v1/repo/status", s.handleUIPossiblyNotConnectedNoAuth(handleRepoStatus)).Methods(http.MethodGet)
 	m.HandleFunc("/api/v1/repo/sync", s.handleUI(handleRepoSync)).Methods(http.MethodPost)
 	m.HandleFunc("/api/v1/repo/connect", s.handleUIPossiblyNotConnected(handleRepoConnect)).Methods(http.MethodPost)
 	m.HandleFunc("/api/v1/repo/exists", s.handleUIPossiblyNotConnected(handleRepoExists)).Methods(http.MethodPost)
@@ -156,6 +156,7 @@ func (s *Server) SetupHTMLUIAPIHandlers(m *mux.Router) {
 	m.HandleFunc("/api/v1/mounts", s.handleUI(handleMountList)).Methods(http.MethodGet)
 
 	m.HandleFunc("/api/v1/current-user", s.handleUIPossiblyNotConnected(handleCurrentUser)).Methods(http.MethodGet)
+	m.HandleFunc("/api/v1/logout", s.handleUI(handleLogout)).Methods(http.MethodPost)
 	m.HandleFunc("/api/v1/ui-preferences", s.handleUIPossiblyNotConnected(handleGetUIPreferences)).Methods(http.MethodGet)
 	m.HandleFunc("/api/v1/ui-preferences", s.handleUIPossiblyNotConnected(handleSetUIPreferences)).Methods(http.MethodPut)
 
@@ -202,6 +203,9 @@ func (s *Server) isAuthenticated(rc requestContext) bool {
 	username, password, ok := rc.req.BasicAuth()
 	if !ok {
 		rc.w.Header().Set("WWW-Authenticate", `Basic realm="Kopia"`)
+		rc.w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
+		rc.w.Header().Set("Pragma", "no-cache")
+		rc.w.Header().Set("Expires", "0")
 		http.Error(rc.w, "Missing credentials.\n", http.StatusUnauthorized)
 
 		return false
@@ -219,6 +223,9 @@ func (s *Server) isAuthenticated(rc requestContext) bool {
 
 	if !isValid {
 		rc.w.Header().Set("WWW-Authenticate", `Basic realm="Kopia"`)
+		rc.w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
+		rc.w.Header().Set("Pragma", "no-cache")
+		rc.w.Header().Set("Expires", "0")
 		http.Error(rc.w, "Access denied.\n", http.StatusUnauthorized)
 
 		// Log failed authentication attempt
@@ -304,10 +311,10 @@ func (s *Server) getOptions() *Options {
 
 func (s *Server) getUIUserAuthorizationFunc() isAuthorizedFunc {
 	if s.options.UseRepositoryUsersForUI {
-		log(s.rootctx).Infof("Web UI authentication: using repository users")
+		log(s.rootctx).Debugf("Web UI authentication: using repository users")
 		return requireRepositoryUser
 	}
-	log(s.rootctx).Infof("Web UI authentication: using single user")
+	log(s.rootctx).Debugf("Web UI authentication: using single user")
 	return requireUIUser
 }
 
@@ -365,6 +372,74 @@ func (s *Server) handleUI(f apiRequestFunc) http.HandlerFunc {
 
 func (s *Server) handleUIPossiblyNotConnected(f apiRequestFunc) http.HandlerFunc {
 	return s.handleRequestPossiblyNotConnected(s.getUIUserAuthorizationFunc(), csrfTokenRequired, f)
+}
+
+func (s *Server) handleUIPossiblyNotConnectedNoAuth(f apiRequestFunc) http.HandlerFunc {
+	return s.handleRequestPossiblyNotConnectedNoAuth(csrfTokenRequired, f)
+}
+
+func (s *Server) handleRequestPossiblyNotConnectedNoAuth(checkCSRFToken csrfTokenOption, f apiRequestFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		rc := s.captureRequestContext(w, r)
+
+		// we must pre-read request body before acquiring the lock as it sometimes leads to deadlock
+		// in HTTP/2 server.
+		// See https://github.com/golang/go/issues/40816
+		body, berr := io.ReadAll(rc.req.Body)
+		if berr != nil {
+			http.Error(rc.w, "error reading request body", http.StatusInternalServerError)
+			return
+		}
+
+		rc.body = body
+
+		if s.options.LogRequests {
+			log(r.Context()).Debugf("request %v (%v bytes)", rc.req.URL, len(body))
+		}
+
+		rc.w.Header().Set("Content-Type", "application/json")
+
+		e := json.NewEncoder(rc.w)
+		e.SetIndent("", "  ")
+
+		var (
+			v   any
+			err *apiError
+		)
+
+		// process the request while ignoring the cancellation signal
+		// to ensure all goroutines started by it won't be canceled
+		// when the request finishes.
+		ctx := context.WithoutCancel(r.Context())
+
+		// Skip authentication check for this endpoint
+		v, err = f(ctx, rc)
+
+		if err == nil {
+			if b, ok := v.([]byte); ok {
+				if _, err := rc.w.Write(b); err != nil {
+					log(ctx).Errorf("error writing response: %v", err)
+				}
+			} else if err := e.Encode(v); err != nil {
+				log(ctx).Errorf("error encoding response: %v", err)
+			}
+
+			return
+		}
+
+		rc.w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		rc.w.Header().Set("X-Content-Type-Options", "nosniff")
+		rc.w.WriteHeader(err.httpErrorCode)
+
+		if s.options.LogRequests && err.apiErrorCode == serverapi.ErrorNotConnected {
+			log(ctx).Debugf("%v: error code %v message %v", rc.req.URL, err.apiErrorCode, err.message)
+		}
+
+		_ = e.Encode(&serverapi.ErrorResponse{
+			Code:  err.apiErrorCode,
+			Error: err.message,
+		})
+	}
 }
 
 func (s *Server) handleRequestPossiblyNotConnected(isAuthorized isAuthorizedFunc, checkCSRFToken csrfTokenOption, f apiRequestFunc) http.HandlerFunc {
@@ -504,6 +579,36 @@ func handleFlush(ctx context.Context, rc requestContext) (any, *apiError) {
 	if err := rw.Flush(ctx); err != nil {
 		return nil, internalServerError(err)
 	}
+
+	return &serverapi.Empty{}, nil
+}
+
+func handleLogout(ctx context.Context, rc requestContext) (any, *apiError) {
+	// Clear the authentication cookie by setting it to expire in the past
+	http.SetCookie(rc.w, &http.Cookie{
+		Name:    kopiaAuthCookie,
+		Value:   "",
+		Expires: clock.Now().Add(-24 * time.Hour), // Set to past time to expire immediately
+		Path:    "/",
+		MaxAge:  -1, // Delete the cookie
+	})
+
+	// Clear the session cookie as well
+	http.SetCookie(rc.w, &http.Cookie{
+		Name:    "Kopia-Session-Cookie",
+		Value:   "",
+		Expires: clock.Now().Add(-24 * time.Hour), // Set to past time to expire immediately
+		Path:    "/",
+		MaxAge:  -1, // Delete the cookie
+	})
+
+	// Set headers to force browser to clear Basic Auth cache
+	rc.w.Header().Set("WWW-Authenticate", `Basic realm="Kopia"`)
+	rc.w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
+	rc.w.Header().Set("Pragma", "no-cache")
+	rc.w.Header().Set("Expires", "0")
+
+	log(ctx).Infof("user logged out from client %s", rc.req.RemoteAddr)
 
 	return &serverapi.Empty{}, nil
 }
@@ -815,28 +920,34 @@ func (s *Server) ServeStaticFiles(m *mux.Router, fs http.FileSystem) {
 
 		rc := s.captureRequestContext(w, r)
 
-		//nolint:contextcheck
-		if !s.isAuthenticated(rc) {
-			return
-		}
+		// Allow serving static files (including login page) without authentication
+		// Only require authentication for API endpoints and authenticated pages
+		if r.URL.Path == "/" || strings.HasPrefix(r.URL.Path, "/static/") || strings.HasPrefix(r.URL.Path, "/assets/") {
+			// Serve static files without authentication check
+		} else {
+			//nolint:contextcheck
+			if !s.isAuthenticated(rc) {
+				return
+			}
 
-		//nolint:contextcheck
-		if !s.getUIUserAuthorizationFunc()(rc.req.Context(), rc) {
-			http.Error(w, `UI Access denied. See https://github.com/kopia/kopia/issues/880#issuecomment-798421751 for more information.`, http.StatusForbidden)
-			return
+			//nolint:contextcheck
+			if !s.getUIUserAuthorizationFunc()(rc.req.Context(), rc) {
+				http.Error(w, `UI Access denied. See https://github.com/kopia/kopia/issues/880#issuecomment-798421751 for more information.`, http.StatusForbidden)
+				return
+			}
 		}
 
 		if r.URL.Path == "/" && indexBytes != nil {
 			var sessionID string
 
-			if cookie, err := r.Cookie(kopiaSessionCookie); err == nil {
+			if cookie, err := r.Cookie("Kopia-Session-Cookie"); err == nil {
 				// already in a session, likely a new tab was opened
 				sessionID = cookie.Value
 			} else {
 				sessionID = uuid.NewString()
 
 				http.SetCookie(w, &http.Cookie{
-					Name:  kopiaSessionCookie,
+					Name:  "Kopia-Session-Cookie",
 					Value: sessionID,
 					Path:  "/",
 				})

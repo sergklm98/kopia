@@ -54,6 +54,7 @@ func handleRepoStatus(_ context.Context, rc requestContext) (any, *apiError) {
 			Storage:                    dr.BlobReader().ConnectionInfo().Type,
 			ClientOptions:              dr.ClientOptions(),
 			SupportsContentCompression: dr.ContentReader().SupportsContentCompression(),
+			UseRepositoryAuth:          rc.srv.getOptions().UseRepositoryUsersForUI,
 		}, nil
 	}
 
@@ -63,8 +64,9 @@ func handleRepoStatus(_ context.Context, rc requestContext) (any, *apiError) {
 	}
 
 	result := &serverapi.StatusResponse{
-		Connected:     true,
-		ClientOptions: rc.rep.ClientOptions(),
+		Connected:         true,
+		ClientOptions:     rc.rep.ClientOptions(),
+		UseRepositoryAuth: rc.srv.getOptions().UseRepositoryUsersForUI,
 	}
 
 	if rr, ok := rc.rep.(remoteRepository); ok {
@@ -362,6 +364,11 @@ func connectAndOpen(ctx context.Context, conn blob.ConnectionInfo, password stri
 }
 
 func handleRepoDisconnect(ctx context.Context, rc requestContext) (any, *apiError) {
+	// Prevent disconnect when using repository authentication to avoid making server unreachable
+	if rc.srv.getOptions().UseRepositoryUsersForUI {
+		return nil, requestError(serverapi.ErrorMalformedRequest, "cannot disconnect when using repository authentication (--use-repo-auth). This would make the server unreachable. Please restart the server to change authentication mode.")
+	}
+
 	if err := rc.srv.disconnect(ctx); err != nil {
 		return nil, internalServerError(err)
 	}
