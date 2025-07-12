@@ -74,23 +74,38 @@ func requireUIUser(_ context.Context, rc requestContext) bool {
 
 // requireRepositoryUser allows any user that exists in the repository to access the web UI
 func requireRepositoryUser(ctx context.Context, rc requestContext) bool {
-	if rc.srv.getAuthenticator() == nil {
-		return true
-	}
-
-	user, password, _ := rc.req.BasicAuth()
-	if user == "" || password == "" {
-		return false
-	}
-
-	// Use the same authentication logic as API connections
-	// This checks against repository-stored users
 	authenticator := rc.srv.getAuthenticator()
 	if authenticator == nil {
 		return true
 	}
 
-	isValid := authenticator.IsValid(ctx, rc.rep, user, password)
+	var user, password string
+	var ok, isValid bool
+
+	// When using repository auth, check for custom headers first
+	if rc.srv.getOptions().UseRepositoryUsersForUI {
+		user = rc.req.Header.Get("X-Kopia-User")
+		password = rc.req.Header.Get("X-Kopia-Password")
+
+		if user != "" && password != "" {
+			isValid = authenticator.IsValid(ctx, rc.rep, user, password)
+			if isValid {
+				return true
+			}
+		}
+	}
+
+	// Fall back to Basic Auth if custom headers not present or not using repo auth
+	user, password, ok = rc.req.BasicAuth()
+
+	if !ok || user == "" || password == "" {
+		return false
+	}
+
+	// Use the same authentication logic as API connections
+	// This checks against repository-stored users
+
+	isValid = authenticator.IsValid(ctx, rc.rep, user, password)
 
 	// Log repository user authentication attempts (but not the result to avoid security issues)
 	if user != "" {

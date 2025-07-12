@@ -828,19 +828,6 @@ func (s *Server) ServeStaticFiles(m *mux.Router, fs http.FileSystem) {
 			r = r2
 		}
 
-		rc := s.captureRequestContext(w, r)
-
-		//nolint:contextcheck
-		if !s.isAuthenticated(rc) {
-			return
-		}
-
-		//nolint:contextcheck
-		if !s.getUIUserAuthorizationFunc()(rc.req.Context(), rc) {
-			http.Error(w, `UI Access denied. See https://github.com/kopia/kopia/issues/880#issuecomment-798421751 for more information.`, http.StatusForbidden)
-			return
-		}
-
 		if r.URL.Path == "/" && indexBytes != nil {
 			var sessionID string
 

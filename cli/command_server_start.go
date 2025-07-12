@@ -378,7 +378,6 @@ func (c *commandServerStart) getAuthenticator(ctx context.Context) (auth.Authent
 
 		authenticators = append(authenticators, auth.AuthenticateSingleUser(c.serverControlUsername, randomPassword))
 	}
-
 	log(ctx).Infof(`
 Server will allow connections from users whose accounts are stored in the repository.
 User accounts can be added using 'kopia server user add'.
